@@ -10,9 +10,11 @@ class FakeRetriever:
     def __init__(self, chunks):
         self.chunks = chunks
         self.question = None
+        self.limit = None
 
-    def retrieve(self, question):
+    def retrieve(self, question, limit=3):
         self.question = question
+        self.limit = limit
         return self.chunks
 
 
@@ -38,6 +40,20 @@ def test_rag_service_passes_retrieved_context_and_returns_sources() -> None:
     assert sources == [chunk]
     assert retriever.question == "What attendance?"
     assert generator.received_chunks == [chunk]
+
+
+def test_rag_service_passes_configured_retrieval_limit() -> None:
+    class LimitedRetriever(FakeRetriever):
+        def retrieve(self, question, limit):
+            self.limit = limit
+            return self.chunks
+
+    retriever = LimitedRetriever([])
+    service = RAGService(retriever, FakeAnswerGenerator())
+
+    service.ask("question", limit=7)
+
+    assert retriever.limit == 7
 
 
 def test_rag_service_refuses_without_relevant_context() -> None:

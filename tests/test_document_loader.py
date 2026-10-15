@@ -1,6 +1,10 @@
 import pytest
 
-from document_loader import DocumentProcessingError, extract_pdf_pages
+from document_loader import (
+    MAX_PDF_SIZE_BYTES,
+    DocumentProcessingError,
+    extract_pdf_pages,
+)
 
 
 def test_extract_pdf_pages_preserves_filename_and_page(make_text_pdf) -> None:
@@ -35,3 +39,8 @@ def test_extract_pdf_pages_rejects_image_only_pdf(make_text_pdf) -> None:
 
     with pytest.raises(DocumentProcessingError, match="OCR"):
         extract_pdf_pages(pdf, "scan.pdf")
+
+
+def test_extract_pdf_pages_rejects_oversized_upload() -> None:
+    with pytest.raises(DocumentProcessingError, match="20 MB"):
+        extract_pdf_pages(b"x" * (MAX_PDF_SIZE_BYTES + 1), "large.pdf")

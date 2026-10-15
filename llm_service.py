@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import ollama
@@ -7,6 +8,7 @@ from models import RetrievedChunk
 
 CHAT_MODEL = "llama3.2:3b"
 UNKNOWN_ANSWER = "Information not found in the available documents."
+logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTION = (
     "You are a college information assistant. Answer the user's question using "
@@ -60,7 +62,8 @@ class OllamaAnswerGenerator:
         except LLMServiceError:
             raise
         except Exception as error:
+            logger.exception("Ollama answer generation failed.")
             raise LLMServiceError(
                 "Could not generate an answer. Check that Ollama is running and "
-                "`llama3.2:3b` is installed."
+                "run `ollama pull llama3.2:3b` if the model is missing."
             ) from error

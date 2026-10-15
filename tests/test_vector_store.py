@@ -1,3 +1,5 @@
+import pytest
+
 from chunker import chunk_pages
 from models import DocumentPage
 from vector_store import ChromaVectorStore, document_id_for
@@ -63,3 +65,27 @@ def test_identical_text_on_different_pages_keeps_both_sources(tmp_path) -> None:
 def test_document_id_is_stable_and_content_based() -> None:
     assert document_id_for(b"same") == document_id_for(b"same")
     assert document_id_for(b"same") != document_id_for(b"different")
+
+
+def test_reindexing_same_document_does_not_duplicate_chunks(tmp_path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma")
+    document_id = document_id_for(b"same PDF")
+    chunks = chunk_pages([DocumentPage("same.pdf", 1, "repeated content")])
+
+    store.add_chunks(document_id, chunks, [[1.0, 0.0]])
+    store.add_chunks(document_id, chunks, [[1.0, 0.0]])
+
+    assert store.collection.count() == 1
+
+
+def test_store_rejects_inconsistent_embedding_dimensions(tmp_path) -> None:
+    store = ChromaVectorStore(path=tmp_path / "chroma")
+    chunks = chunk_pages(
+        [
+            DocumentPage("dimensions.pdf", 1, "first chunk"),
+            DocumentPage("dimensions.pdf", 2, "second chunk"),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="same dimension"):
+        store.add_chunks(document_id_for(b"dimensions"), chunks, [[1.0], [1.0, 2.0]])

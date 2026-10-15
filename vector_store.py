@@ -1,4 +1,6 @@
 import hashlib
+import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,7 @@ from models import DocumentChunk, RetrievedChunk
 
 
 COLLECTION_NAME = "college_documents"
+logger = logging.getLogger(__name__)
 
 
 class VectorStoreError(RuntimeError):
@@ -31,6 +34,7 @@ class ChromaVectorStore:
                 metadata={"hnsw:space": "cosine"},
             )
         except Exception as error:
+            logger.exception("Failed to open local ChromaDB at %s.", path)
             raise VectorStoreError(
                 "Could not open the local ChromaDB database. Check that the "
                 "chroma_db folder is writable."
@@ -45,12 +49,14 @@ class ChromaVectorStore:
             )
             return bool(result["ids"])
         except Exception as error:
+            logger.exception("Could not check for document %s.", document_id)
             raise VectorStoreError("Could not check the indexed document.") from error
 
     def is_empty(self) -> bool:
         try:
             return self.collection.count() == 0
         except Exception as error:
+            logger.exception("Could not count chunks in the ChromaDB collection.")
             raise VectorStoreError("Could not check the ChromaDB collection.") from error
 
     def add_chunks(
@@ -63,6 +69,17 @@ class ChromaVectorStore:
             raise ValueError("Every document chunk must have exactly one embedding.")
         if not chunks:
             raise ValueError("Cannot store a document without text chunks.")
+        if any(not embedding for embedding in embeddings):
+            raise ValueError("Document embeddings cannot be empty.")
+        dimensions = {len(embedding) for embedding in embeddings}
+        if len(dimensions) != 1:
+            raise ValueError("All document embeddings must have the same dimension.")
+        if any(
+            not math.isfinite(value)
+            for embedding in embeddings
+            for value in embedding
+        ):
+            raise ValueError("Document embeddings must contain finite numbers.")
 
         ids = [
             f"{document_id}:{chunk.page_number}:{chunk.chunk_index}:"
@@ -85,6 +102,13 @@ class ChromaVectorStore:
                 embeddings=embeddings,
             )
         except Exception as error:
+            logger.exception("Failed to save document chunks in ChromaDB.")
+            if "dimension" in str(error).casefold():
+                raise VectorStoreError(
+                    "The embedding dimensions do not match the existing ChromaDB "
+                    "collection. Do not delete the database unless you intend to "
+                    "re-index all documents with the same embedding model."
+                ) from error
             raise VectorStoreError("Could not save document chunks in ChromaDB.") from error
 
     def search(
@@ -116,6 +140,13 @@ class ChromaVectorStore:
                 )
             ]
         except Exception as error:
+            logger.exception("Could not search the ChromaDB collection.")
+            if "dimension" in str(error).casefold():
+                raise VectorStoreError(
+                    "The query embedding dimension does not match the stored "
+                    "ChromaDB collection. Use the same embedding model as the "
+                    "indexed documents or intentionally rebuild the index."
+                ) from error
             raise VectorStoreError("Could not search the ChromaDB collection.") from error
 
     def list_documents(self) -> list[dict[str, str]]:
@@ -130,6 +161,7 @@ class ChromaVectorStore:
                 }
             return sorted(documents.values(), key=lambda item: item["source"].lower())
         except Exception as error:
+            logger.exception("Could not list documents in the ChromaDB collection.")
             raise VectorStoreError("Could not list indexed documents.") from error
 
     def delete_document(self, document_id: str) -> None:
@@ -137,4 +169,5 @@ class ChromaVectorStore:
             if self.has_document(document_id):
                 self.collection.delete(where={"document_id": document_id})
         except Exception as error:
+            logger.exception("Could not remove document %s from ChromaDB.", document_id)
             raise VectorStoreError("Could not remove the indexed document.") from error

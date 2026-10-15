@@ -9,6 +9,9 @@ __pycache__/
 !.env.example
 chroma_db/
 data/private/
+uploads/
+temp_uploads/
+uploads_tmp/
 *.pdf
 !.gitkeep
 !tests/fixtures/fictional_demo_handbook.pdf

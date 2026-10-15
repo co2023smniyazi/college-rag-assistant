@@ -1,9 +1,11 @@
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import ollama
 
 
+logger = logging.getLogger(__name__)
 EMBEDDING_MODEL = "nomic-embed-text"
 
 
@@ -36,7 +38,8 @@ class OllamaEmbedder:
         except EmbeddingServiceError:
             raise
         except Exception as error:
+            logger.exception("Ollama embedding generation failed.")
             raise EmbeddingServiceError(
                 "Could not generate embeddings. Check that Ollama is running and "
-                "that `nomic-embed-text` is installed."
+                "run `ollama pull nomic-embed-text` if the model is missing."
             ) from error
