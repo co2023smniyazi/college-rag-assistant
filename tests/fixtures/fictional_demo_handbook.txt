@@ -1,0 +1,35 @@
+FICTIONAL TEST DOCUMENT - NOT A REAL COLLEGE POLICY
+
+This invented handbook is provided only as a software test fixture. It does not
+describe any actual college or establish real academic requirements.
+
+Attendance: In this fictional example, students must maintain at least 75%
+attendance to be eligible to sit semester examinations.
+
+Revaluation: In this fictional example, students may apply for examination
+revaluation within five working days after examination results are announced.
+
+Graduation: In this fictional example, students need 120 credits to complete
+the sample degree programme.
+
+Course registration: In this fictional example, registration closes during the
+first 10 calendar days of each semester. Students submit a student ID and a
+signed course selection form.
+
+Placement: In this fictional example, placement applicants need a CGPA of at
+least 6.5 and must have no active backlogs.
+
+Library: In this fictional example, the library closes at 8:00 PM on weekdays.
+Students may borrow up to two books for 14 days.
+
+Laboratory: In this fictional example, students must wear a lab coat in the
+chemistry laboratory and complete a safety briefing before their first session.
+
+Internships: In this fictional example, students submit the internship report
+within 14 days after the internship ends.
+
+Examinations: In this fictional example, students show a photo ID card to enter
+an examination hall.
+
+This test document does not specify hostel fees, bus routes, next year's chief
+guest, scholarship amounts, or a cafeteria menu.
