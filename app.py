@@ -4,10 +4,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from app_services import build_rag_service, get_ollama_status, model_is_available
+from app_services import (
+    build_rag_service,
+    get_ollama_status,
+    model_is_available,
+    resolve_ollama_host,
+)
 from chunker import chunk_pages
 from document_loader import (
-    MAX_PDF_SIZE_BYTES,
     DocumentProcessingError,
     extract_pdf_pages,
 )
@@ -26,14 +30,23 @@ logging.basicConfig(
 )
 
 
+def get_configured_ollama_host() -> str | None:
+    try:
+        return resolve_ollama_host(st.secrets)
+    except FileNotFoundError:
+        return resolve_ollama_host()
+
+
 @st.cache_resource
-def get_services() -> tuple[ChromaVectorStore, OllamaEmbedder, RAGService]:
-    return build_rag_service(CHROMA_PATH)
+def get_services(
+    ollama_host: str | None,
+) -> tuple[ChromaVectorStore, OllamaEmbedder, RAGService]:
+    return build_rag_service(CHROMA_PATH, ollama_host=ollama_host)
 
 
 @st.cache_data(ttl=30)
-def get_cached_ollama_status() -> tuple[bool, set[str], str]:
-    return get_ollama_status()
+def get_cached_ollama_status(ollama_host: str | None) -> tuple[bool, set[str], str]:
+    return get_ollama_status(ollama_host=ollama_host)
 
 
 def render_status_card(
@@ -259,7 +272,7 @@ st.markdown(
     }
     </style>
     <section class="hero">
-      <div class="hero-kicker">LOCAL · PRIVATE · DOCUMENT-GROUNDED</div>
+      <div class="hero-kicker">DOCUMENT-GROUNDED · OLLAMA-POWERED</div>
       <h1>College Knowledge, made easier.</h1>
       <p>Ask your college PDFs a question. Get a clear answer grounded in the
       documents, with the source page right there to check.</p>
@@ -268,13 +281,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+ollama_host = get_configured_ollama_host()
 try:
-    store, embedder, rag_service = get_services()
+    store, embedder, rag_service = get_services(ollama_host)
 except VectorStoreError as error:
     st.error(str(error))
     st.stop()
 
-ollama_connected, installed_models, ollama_message = get_cached_ollama_status()
+ollama_connected, installed_models, ollama_message = get_cached_ollama_status(
+    ollama_host
+)
 chat_model_available = model_is_available(CHAT_MODEL, installed_models)
 embedding_model_available = model_is_available(EMBEDDING_MODEL, installed_models)
 try:
@@ -300,7 +316,13 @@ with status_columns[0]:
     render_status_card(
         "Ollama service",
         "Connected" if ollama_connected else "Unavailable",
-        "Local model runtime" if ollama_connected else ollama_message,
+        (
+            "Configured Ollama endpoint"
+            if ollama_connected and ollama_host
+            else "Local Ollama runtime"
+            if ollama_connected
+            else ollama_message
+        ),
         ollama_connected,
     )
 with status_columns[1]:
@@ -467,7 +489,8 @@ if "answer" in st.session_state:
 
 st.markdown(
     '<div style="margin-top:2.5rem;color:#8a93a8;font-size:.78rem;text-align:center">'
-    "Your files stay on this device · Answers are based on retrieved passages"
+    "Uploaded PDFs are processed in memory; extracted text and vectors are stored "
+    "in this app's ChromaDB · Answers are based on retrieved passages"
     "</div>",
     unsafe_allow_html=True,
 )

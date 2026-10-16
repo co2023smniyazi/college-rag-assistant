@@ -1,9 +1,10 @@
 # College RAG Assistant
 
-A locally hosted question-answering app for college PDFs. It retrieves relevant
-passages and asks a local Ollama model to answer from those passages. It does not
-send documents to a paid cloud API. When there is not enough relevant evidence,
-the answer is exactly: **Information not found in the available documents.**
+A question-answering app for college PDFs. It retrieves relevant passages and
+asks an Ollama model to answer from those passages. Ollama runs locally by
+default; if `OLLAMA_HOST` is configured, document text and questions are sent to
+that endpoint. When there is not enough relevant evidence, the answer is
+exactly: **Information not found in the available documents.**
 
 > The bundled PDF and its sample facts are fictional test data, not real college
 > policy. No public or college-specific documents are bundled.
@@ -33,11 +34,11 @@ PDF upload -> PyPDF extraction -> page-aware chunking -> Ollama embeddings
            -> persistent ChromaDB
 
 Question -> Ollama question embedding -> Chroma similarity search -> relevance
-         -> local llama3.2:3b -> answer + retrieved source names/pages
+         -> llama3.2:3b -> answer + retrieved source names/pages
 ```
 
-The application is local. Streamlit binds to `127.0.0.1`; ChromaDB data is kept
-in the ignored `chroma_db/` directory. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For local runs, Streamlit binds to `127.0.0.1` and ChromaDB data is kept in the
+ignored `chroma_db/` directory. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP server
 
@@ -52,8 +53,8 @@ relevant context is found, the tools say so and the answering tool returns the
 existing exact refusal rather than generating an unsupported answer.
 
 The server uses **stdio transport**. An MCP-compatible desktop client starts it
-as a local subprocess, so no network port is opened. Install Python dependencies
-in the project's Python 3.11 environment as shown above, then add an MCP server
+as a local subprocess, so no network port is opened. Install MCP dependencies
+with `python -m pip install -r requirements-mcp.txt`, then add an MCP server
 entry to the client's configuration. For Claude Desktop on Windows, the
 configuration is typically `%APPDATA%\Claude\claude_desktop_config.json`; merge
 this entry into its existing `mcpServers` object and update the project path if
@@ -89,6 +90,7 @@ This starts the stdio protocol server; it is intended to be launched by an MCP
 client, not opened in a browser. Test it with:
 
 ```powershell
+python -m pip install -r requirements-dev.txt
 python -m pytest -q tests/test_mcp_server.py
 ```
 
@@ -118,11 +120,13 @@ application as-is.
 ## Technologies
 
 - Python 3.11 (the existing environment is Python 3.11.9)
-- Streamlit, Ollama, ChromaDB, PyPDF, the MCP Python SDK, pytest
+- Streamlit, Ollama, ChromaDB, and PyPDF are the web app's runtime dependencies
+  in `requirements.txt`.
+- The MCP SDK is in `requirements-mcp.txt`; pytest is in `requirements-dev.txt`.
 - Ollama models: `llama3.2:3b` and `nomic-embed-text`
 
-Pinned dependency versions are in `requirements.txt`. The existing `venv/`
-already contains these dependencies.
+Pinned dependency versions are in their corresponding requirements files. The
+existing `venv/` already contains the full development dependencies.
 
 ## Setup and run
 
@@ -142,17 +146,89 @@ If you need to create the existing virtual environment on a new machine:
 ```powershell
 py -3.11 -m venv venv
 .\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 The Ollama desktop application normally starts its local service. If it is not
 running, start Ollama or run `ollama serve` in another terminal. The default
-local API address is `http://localhost:11434`; set `OLLAMA_HOST` if using another
-local Ollama endpoint. No API key is needed.
+local API address is `http://localhost:11434`. Set `OLLAMA_HOST` if using a
+different local or remote Ollama endpoint. The endpoint must be reachable from
+the process running this app and have both required models installed.
+
+## Streamlit Community Cloud deployment
+
+### Python and dependencies
+
+The project was developed and tested with **Python 3.11.9**. Streamlit
+Community Cloud currently defaults new deployments to Python 3.12; select
+**Python 3.11** in Advanced settings to match the tested runtime. Root
+`requirements.txt` contains the packages imported by the Streamlit app. The MCP
+SDK and pytest are not needed by the web entrypoint and are in
+`requirements-mcp.txt` and `requirements-dev.txt`, respectively. Community
+Cloud should use the root `requirements.txt`.
+
+Check the production requirements locally:
+
+```powershell
+python -m pip install --dry-run --ignore-installed -r requirements.txt
+```
+
+The reported message **"Error installing requirements"** alone does not
+identify the failing package or resolver conflict. No Streamlit Cloud build log
+was available in this workspace, so the exact cause is not verified. Open the
+app in Community Cloud, select **Manage app**, and copy/download the complete
+build log, including the first `ERROR:` line and the selected Python version,
+to diagnose a specific Cloud failure.
+
+### Deployment steps and Ollama configuration
+
+1. In Streamlit Community Cloud, choose **Create app** and select this GitHub
+   repository, the intended branch, and `app.py` as the entrypoint.
+2. Open **Advanced settings** and select Python 3.11.
+3. If the app should use remote Ollama, paste the following TOML into the
+   Community Cloud secrets box, replacing the example endpoint:
+
+```toml
+OLLAMA_HOST = "https://ollama.example.com"
+```
+
+The app reads the `OLLAMA_HOST` environment variable first, then the
+`st.secrets["OLLAMA_HOST"]` setting, then falls back to the normal local Ollama
+client default. Never commit credentials. The Streamlit Cloud process cannot
+reach Ollama running on your laptop: `localhost` and `127.0.0.1` would refer to
+the app container. The configured service must be network-reachable from Cloud,
+have both `nomic-embed-text` and `llama3.2:3b` installed, and be appropriately
+secured. This integration supports configuring an Ollama endpoint, but does
+not add separate API-key authentication for compatible hosted services.
+
+### Indexed documents and persistence
+
+Cloud does not automatically receive your local Ollama process, downloaded
+models, ignored `chroma_db/` directory, or local indexed documents. A new Cloud
+instance starts with a new/empty Chroma collection. Uploaded original PDF bytes
+are processed in memory and not saved by the app; extracted chunks and vectors
+are written to the project-relative `chroma_db/` directory. Chroma's local
+`PersistentClient` is not a durable cloud storage service: indexed data may be
+lost when the app restarts, rebuilds, or moves to another instance. Do not rely
+on this deployment for persistent or sensitive document storage. Durable
+production use requires a persistent external vector store, backup/restore,
+and appropriate user isolation/access controls.
+
+### MCP limitation in Cloud
+
+Community Cloud deploys the Streamlit app, not the local MCP stdio subprocess.
+The MCP server remains a local client integration: install
+`requirements-mcp.txt` and configure a client to start `mcp_server.py` as
+documented above. Do not expose the stdio server as a public network service.
+The Cloud secrets are not automatically passed to a separately launched local
+MCP process; configure `OLLAMA_HOST` in that process's environment if needed.
+A remote MCP deployment would require a separately designed authenticated
+network transport and durable/shared storage.
 
 ## Index documents and ask questions
 
-1. Open the local Streamlit URL (normally `http://localhost:8501`).
+1. Open the Streamlit URL (normally `http://localhost:8501` locally, or the
+   assigned app URL in Community Cloud).
 2. Check that Ollama and both required models show as available. If the
    embedding model is missing, install it with
    `ollama pull nomic-embed-text`.
@@ -165,14 +241,16 @@ local Ollama endpoint. No API key is needed.
    sidebar if needed. Use **Clear current answer** to clear the displayed result.
 
 Identical PDF bytes are skipped by a content hash. The app does not save uploaded
-PDFs to a temporary upload folder. Important answers should still be checked
-against the cited source passages.
+PDFs to a temporary upload folder. Indexed data belongs to the configured
+ChromaDB filesystem and is not synchronized between local and Cloud instances.
+Important answers should still be checked against the cited source passages.
 
 ## Tests and evaluation
 
 Run unit tests (mocks and temporary Chroma databases; no live Ollama required):
 
 ```powershell
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
