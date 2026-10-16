@@ -39,10 +39,86 @@ Question -> Ollama question embedding -> Chroma similarity search -> relevance
 The application is local. Streamlit binds to `127.0.0.1`; ChromaDB data is kept
 in the ignored `chroma_db/` directory. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## MCP server
+
+The project includes a separate, read-only Model Context Protocol (MCP) server
+in `mcp_server.py`, built with the official Python MCP SDK's FastMCP API. It
+reuses the existing `build_rag_service`, Chroma collection, retriever, and RAG
+answer generator; it does not create a second index or alter Streamlit. Its
+tools are `list_indexed_documents`, `search_college_documents`,
+`ask_college_assistant`, and `get_document_context`. Search and context results
+include source names, page numbers, text, and retrieval distances. When no
+relevant context is found, the tools say so and the answering tool returns the
+existing exact refusal rather than generating an unsupported answer.
+
+The server uses **stdio transport**. An MCP-compatible desktop client starts it
+as a local subprocess, so no network port is opened. Install Python dependencies
+in the project's Python 3.11 environment as shown above, then add an MCP server
+entry to the client's configuration. For Claude Desktop on Windows, the
+configuration is typically `%APPDATA%\Claude\claude_desktop_config.json`; merge
+this entry into its existing `mcpServers` object and update the project path if
+needed:
+
+```json
+{
+  "mcpServers": {
+    "college-rag-assistant": {
+      "command": "D:\\cp2 project\\college-rag-assistant\\venv\\Scripts\\python.exe",
+      "args": ["D:\\cp2 project\\college-rag-assistant\\mcp_server.py"],
+      "cwd": "D:\\cp2 project\\college-rag-assistant"
+    }
+  }
+}
+```
+
+Restart the MCP client after saving its configuration. The server reads the
+same `chroma_db/` directory as the app and creates its RAG services when a tool
+is first called. Ollama must be running and have `nomic-embed-text` and
+`llama3.2:3b` installed. Set `OLLAMA_HOST` in the MCP client's process
+environment only if Ollama is not at its default local address; do not put
+credentials or secrets in this source file. MCP tools are read-only and have no
+arbitrary filesystem or shell access.
+
+To start the MCP server manually from PowerShell:
+
+```powershell
+.\venv\Scripts\python.exe .\mcp_server.py
+```
+
+This starts the stdio protocol server; it is intended to be launched by an MCP
+client, not opened in a browser. Test it with:
+
+```powershell
+python -m pytest -q tests/test_mcp_server.py
+```
+
+The Streamlit UI and MCP server are separate processes. Both may read the same
+local ChromaDB data, but avoid indexing or deleting documents concurrently from
+both processes. This configuration is local-only. A remote deployment needs
+durable storage for ChromaDB and a reachable Ollama service (or a separately
+designed remote inference setup); stdio is not a network transport for remote
+clients.
+
+### Deployment readiness
+
+No cloud host or deployment configuration is selected in this repository. The
+current Windows/Python setup supports local stdio clients that can launch the
+configured Python subprocess. The Streamlit UI and MCP process can run side by
+side on a Linux VM if both use the same project files and durable `chroma_db/`
+storage. A remote MCP client cannot connect directly to stdio over a network:
+it must be able to launch the process remotely (for example, through a
+carefully configured SSH stdio command), or the server must be adapted to
+authenticated Streamable HTTP. This project does not configure either remote
+option, authentication, a durable cloud vector store, or remote Ollama
+inference. Hosting platforms that do not support long-running Python
+subprocesses or persistent local storage are not suitable without architectural
+changes. Cloudflare Workers do not host this Python Streamlit/Ollama/Chroma
+application as-is.
+
 ## Technologies
 
 - Python 3.11 (the existing environment is Python 3.11.9)
-- Streamlit, Ollama, ChromaDB, PyPDF, pytest
+- Streamlit, Ollama, ChromaDB, PyPDF, the MCP Python SDK, pytest
 - Ollama models: `llama3.2:3b` and `nomic-embed-text`
 
 Pinned dependency versions are in `requirements.txt`. The existing `venv/`

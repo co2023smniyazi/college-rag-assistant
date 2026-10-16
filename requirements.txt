@@ -2,4 +2,5 @@ streamlit==1.38.0
 chromadb==0.5.15
 pypdf==5.1.0
 ollama==0.6.3
+mcp==1.30.0
 pytest==8.3.3
