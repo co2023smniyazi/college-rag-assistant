@@ -14,11 +14,14 @@ exactly: **Information not found in the available documents.**
 - Upload multiple PDFs (up to 20 MB each), extract selectable text, and keep
   source filenames and 1-based page numbers.
 - Split text into 1,500-character chunks with 200-character overlap.
-- Use Ollama `nomic-embed-text` embeddings and persistent local ChromaDB.
-- Search for up to 10 relevant passages (3 by default); filter low-relevance
-  results before asking the LLM.
-- Use Ollama `llama3.2:3b` for answers and show the retrieved source pages and
-  supporting passage text.
+- Use Ollama `nomic-embed-text` embeddings and persistent local ChromaDB;
+  each chunk records its embedding model, and legacy unmarked chunks are
+  re-embedded before retrieval.
+- Search for up to 10 relevant passages (3 by default), apply a cosine-distance
+  cutoff calibrated against the bundled question set, and show distances and
+  passage text for inspection.
+- Use Ollama `llama3.2:3b` for answers. Its structured answerability result is
+  validated and unsupported answers become the exact required refusal.
 - List and safely remove indexed PDFs; identical PDF bytes are not indexed twice.
 - Show Ollama, model, and ChromaDB status in the interface.
 - Run the 50-question evaluation dataset and record measured retrieval and
@@ -153,7 +156,9 @@ The Ollama desktop application normally starts its local service. If it is not
 running, start Ollama or run `ollama serve` in another terminal. The default
 local API address is `http://localhost:11434`. Set `OLLAMA_HOST` if using a
 different local or remote Ollama endpoint. The endpoint must be reachable from
-the process running this app and have both required models installed.
+the process running this app and have both required models installed. For a
+remote Ollama server protected by Cloudflare Access, configure the optional
+service-token credentials described below.
 
 ## Streamlit Community Cloud deployment
 
@@ -185,21 +190,80 @@ to diagnose a specific Cloud failure.
 1. In Streamlit Community Cloud, choose **Create app** and select this GitHub
    repository, the intended branch, and `app.py` as the entrypoint.
 2. Open **Advanced settings** and select Python 3.11.
-3. If the app should use remote Ollama, paste the following TOML into the
-   Community Cloud secrets box, replacing the example endpoint:
+3. Streamlit Cloud cannot connect to Ollama running on your PC using
+   `localhost`; that address points back to the Cloud app container. To use
+   the Ollama models on a Windows PC, create a Cloudflare Tunnel and protect
+   its public hostname with Cloudflare Access before adding the app secrets:
+
+   1. Confirm Ollama runs on the PC and both models are installed:
+
+      ```powershell
+      ollama list
+      ```
+
+      The output must include `llama3.2:3b` and `nomic-embed-text`.
+   2. Install `cloudflared` on that PC (for example, with
+      `winget install --id Cloudflare.cloudflared --exact`).
+   3. In the Cloudflare Zero Trust dashboard, create a **named Cloudflare
+      Tunnel** for the PC. Follow the dashboard's Windows instructions to run
+      the tunnel as a service. Keep the tunnel token private and never commit
+      or paste it into this repository.
+   4. In the tunnel's **Published application routes** (sometimes labelled
+      **Public Hostnames**), add a hostname such as
+      `ollama.yourdomain.com` and route it to `http://localhost:11434`.
+      Cloudflare DNS for the domain must be managed by Cloudflare.
+   5. In **Cloudflare Access → Applications**, create a self-hosted
+      application for that same hostname. Create a **Service Auth** policy
+      that allows only the service token you create under **Access → Service
+      credentials**. Do not leave the hostname publicly accessible without
+      this Access policy.
+   6. In Streamlit Community Cloud, open **Manage app → Settings → Secrets**
+      and add the HTTPS hostname and both service-token values:
+
+      ```toml
+      OLLAMA_HOST = "https://ollama.yourdomain.com"
+      CF_ACCESS_CLIENT_ID = "your-service-token-client-id"
+      CF_ACCESS_CLIENT_SECRET = "your-service-token-client-secret"
+      ```
+
+      Replace every example value. Keep the service token only in Streamlit
+      Secrets; do not put it in source code, a committed file, or a chat.
+   7. Restart the Streamlit app. Confirm Ollama shows **Connected** and both
+      models show **Ready** before uploading and indexing the PDF in the
+      deployed app. Your local Chroma index is not copied to Streamlit Cloud;
+      upload the PDF there and select **Index uploaded PDFs**.
+
+   If Ollama is on a different remote server already, use its secured HTTPS
+   endpoint and configure Access credentials if required. Do not use the
+   Streamlit app URL or the local model directory as `OLLAMA_HOST`.
+
+The simplest app secrets shape for an already-secured remote Ollama server is:
 
 ```toml
 OLLAMA_HOST = "https://ollama.example.com"
 ```
 
-The app reads the `OLLAMA_HOST` environment variable first, then the
-`st.secrets["OLLAMA_HOST"]` setting, then falls back to the normal local Ollama
-client default. Never commit credentials. The Streamlit Cloud process cannot
-reach Ollama running on your laptop: `localhost` and `127.0.0.1` would refer to
-the app container. The configured service must be network-reachable from Cloud,
-have both `nomic-embed-text` and `llama3.2:3b` installed, and be appropriately
-secured. This integration supports configuring an Ollama endpoint, but does
-not add separate API-key authentication for compatible hosted services.
+The Streamlit app reads the `OLLAMA_HOST` environment variable first, then
+`st.secrets["OLLAMA_HOST"]`. The configured endpoint must be network-reachable
+from Cloud, have both `nomic-embed-text` and `llama3.2:3b` installed, and be
+appropriately secured. For a Cloudflare Access-protected HTTPS endpoint,
+configure both service-token secrets in Streamlit Community Cloud under
+**Manage app → Settings → Secrets**:
+
+```toml
+OLLAMA_HOST = "https://<your-access-protected-ollama-host>"
+CF_ACCESS_CLIENT_ID = "<Cloudflare service-token client ID>"
+CF_ACCESS_CLIENT_SECRET = "<Cloudflare service-token client secret>"
+```
+
+Both Access credentials must be configured together. They are sent as
+`CF-Access-Client-Id` and `CF-Access-Client-Secret` HTTP headers only to the
+configured non-local HTTPS Ollama endpoint. Local loopback Ollama connections
+do not receive these headers. Environment variables with the same names are also supported by the Streamlit
+app; when either credential environment variable is set, both must be set
+there. Credentials are not included in the app's connection errors or logs.
+This change only authenticates requests: it does not create or host an
+Ollama server, Cloudflare Tunnel, DNS name, or Access policy.
 
 ### Indexed documents and persistence
 
@@ -221,7 +285,9 @@ The MCP server remains a local client integration: install
 `requirements-mcp.txt` and configure a client to start `mcp_server.py` as
 documented above. Do not expose the stdio server as a public network service.
 The Cloud secrets are not automatically passed to a separately launched local
-MCP process; configure `OLLAMA_HOST` in that process's environment if needed.
+MCP process. For that process, configure `OLLAMA_HOST` in its environment and,
+for an Access-protected HTTPS endpoint, also set both
+`CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` as environment variables.
 A remote MCP deployment would require a separately designed authenticated
 network transport and durable/shared storage.
 
@@ -264,11 +330,12 @@ run:
 python evaluate.py
 ```
 
-The evaluator measures source retrieval accuracy across all 50 questions and
-exact-refusal rate on the 10 unanswerable questions. It saves individual
-outputs to ignored `evaluation_results.csv`. Correctness, relevance,
+The evaluator measures source retrieval accuracy for the 40 answerable
+questions and exact-refusal rate for the 10 unanswerable questions. It saves
+individual outputs to ignored `evaluation_results.csv`. Correctness, relevance,
 groundedness, clarity, and completeness require human review and are not
-fabricated by the script. See [docs/TESTING_AND_EVALUATION.md](docs/TESTING_AND_EVALUATION.md).
+fabricated by the script. See
+[docs/TESTING_AND_EVALUATION.md](docs/TESTING_AND_EVALUATION.md).
 
 ## Troubleshooting and limitations
 
@@ -282,6 +349,10 @@ fabricated by the script. See [docs/TESTING_AND_EVALUATION.md](docs/TESTING_AND_
   for the question. Low-relevance results are refused.
 - **Chroma errors or dimension mismatch:** do not delete `chroma_db/` unless you
   intentionally want to lose the local index and rebuild it consistently.
+  Untagged legacy chunks are re-embedded from their stored text with
+  `nomic-embed-text`; a dimension mismatch is surfaced and blocks retrieval
+  rather than mixing vectors. In that case, keep a backup and re-upload the
+  original PDFs to rebuild the collection.
 - **Slow answers:** local generation speed depends on available computer
   resources. This project does not claim a successful real-document answer
   until tested with a real PDF and both local models.

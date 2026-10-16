@@ -125,9 +125,35 @@ and unit tests. The core code was retained and improved rather than recreated.
 
 Implementation changes are in the existing app/services and test files.
 `README.md`, this report, and the documents under `docs/` provide the updated
-instructions. No Jira issues were created or modified. Install the missing
-embedding model before attempting document indexing or real RAG evaluation:
+instructions. No Jira issues were created or modified. The runtime status
+recorded above reflects the original audit date; see the follow-up below for the
+current model and Chroma state.
 
-```powershell
-ollama pull nomic-embed-text
-```
+## Follow-up RAG investigation — 2026-10-16
+
+The original runtime snapshot above is historical. A subsequent check found
+Ollama reachable with both required models installed and a populated local
+collection (17 chunks across two documents). The collection initially had no
+embedding-model identity on its chunks, so prior vectors could have been reused
+or mixed silently. The local chunks were re-embedded with `nomic-embed-text`
+and all 17 now carry the model marker.
+
+Live testing of the bundled PDF and 50-question dataset showed:
+
+- The existing 0.8 cosine-distance cutoff retrieved context for all 10
+  unanswerable questions. Distances overlapped the answerable cases, so a
+  tighter cutoff would incorrectly discard answerable passages. The cutoff is
+  now 0.64, preserving the measured 40/40 expected-source retrievals.
+- The model sometimes returned a non-exact explanation for missing information
+  and confused related facts within the same topic. Structured JSON output,
+  evidence-focused prompting, exact-refusal normalization, and a polarity
+  correction for explicitly contradicted yes/no answers address those cases.
+- One bundled paraphrase asked how much class time could be missed but expected
+  the stated 75% attendance requirement. That required an unstated calculation;
+  the test question was corrected to ask for the supported attendance threshold.
+
+After the changes, the live local-model run retrieved the expected source and
+generated a non-refusal answer for all 40 answerable questions and returned the
+exact refusal for all 10 unanswerable questions. Automated validation reports
+70 passing tests. This fixture is fictional and does not establish answer
+quality for any real college PDF.

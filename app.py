@@ -5,9 +5,11 @@ from pathlib import Path
 import streamlit as st
 
 from app_services import (
+    OllamaAccessConfigurationError,
     build_rag_service,
     get_ollama_status,
     model_is_available,
+    resolve_ollama_access_headers,
     resolve_ollama_host,
 )
 from chunker import chunk_pages
@@ -30,23 +32,37 @@ logging.basicConfig(
 )
 
 
-def get_configured_ollama_host() -> str | None:
+def get_configured_ollama_settings() -> tuple[str | None, dict[str, str] | None]:
     try:
-        return resolve_ollama_host(st.secrets)
+        secrets = st.secrets
     except FileNotFoundError:
-        return resolve_ollama_host()
+        secrets = None
+    ollama_host = resolve_ollama_host(secrets)
+    access_headers = resolve_ollama_access_headers(ollama_host, secrets)
+    return ollama_host, access_headers
 
 
 @st.cache_resource
 def get_services(
     ollama_host: str | None,
+    access_headers: dict[str, str] | None,
 ) -> tuple[ChromaVectorStore, OllamaEmbedder, RAGService]:
-    return build_rag_service(CHROMA_PATH, ollama_host=ollama_host)
+    return build_rag_service(
+        CHROMA_PATH,
+        ollama_host=ollama_host,
+        access_headers=access_headers,
+    )
 
 
 @st.cache_data(ttl=30)
-def get_cached_ollama_status(ollama_host: str | None) -> tuple[bool, set[str], str]:
-    return get_ollama_status(ollama_host=ollama_host)
+def get_cached_ollama_status(
+    ollama_host: str | None,
+    access_headers: dict[str, str] | None,
+) -> tuple[bool, set[str], str]:
+    return get_ollama_status(
+        ollama_host=ollama_host,
+        access_headers=access_headers,
+    )
 
 
 def render_status_card(
@@ -281,36 +297,61 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-ollama_host = get_configured_ollama_host()
 try:
-    store, embedder, rag_service = get_services(ollama_host)
+    ollama_host, access_headers = get_configured_ollama_settings()
+except OllamaAccessConfigurationError as error:
+    st.error(str(error))
+    st.stop()
+
+try:
+    store, embedder, rag_service = get_services(ollama_host, access_headers)
 except VectorStoreError as error:
     st.error(str(error))
     st.stop()
 
 ollama_connected, installed_models, ollama_message = get_cached_ollama_status(
-    ollama_host
+    ollama_host,
+    access_headers,
 )
 chat_model_available = model_is_available(CHAT_MODEL, installed_models)
 embedding_model_available = model_is_available(EMBEDDING_MODEL, installed_models)
+index_compatible = True
+if ollama_connected and embedding_model_available:
+    try:
+        store.ensure_embedding_model(embedder.embed_texts)
+    except (EmbeddingServiceError, VectorStoreError) as error:
+        index_compatible = False
+        st.error(str(error))
+
 try:
-    indexed_count = len(store.list_documents())
+    indexed_count: int | None = len(store.list_documents())
     chroma_ready = True
     chroma_note = f"{indexed_count} indexed document(s)"
 except VectorStoreError as error:
+    indexed_count = None
     chroma_ready = False
     chroma_note = str(error)
 
-search_ready = embedding_model_available and chroma_ready
-search_note = (
-    f"{chroma_note} · {EMBEDDING_MODEL}"
-    if search_ready
-    else (
-        f"Install with: ollama pull {EMBEDDING_MODEL}"
-        if not embedding_model_available
-        else chroma_note
-    )
+search_ready = (
+    ollama_connected
+    and embedding_model_available
+    and chroma_ready
+    and index_compatible
+    and indexed_count is not None
+    and indexed_count > 0
 )
+if not ollama_connected:
+    search_note = ollama_message
+elif not embedding_model_available:
+    search_note = f"Install with: ollama pull {EMBEDDING_MODEL}"
+elif not chroma_ready:
+    search_note = chroma_note
+elif not index_compatible:
+    search_note = "Existing chunks could not be validated with the configured model."
+elif indexed_count == 0:
+    search_note = "No documents indexed. Upload a PDF to get started."
+else:
+    search_note = f"{chroma_note} · {EMBEDDING_MODEL}"
 status_columns = st.columns(3, gap="medium")
 with status_columns[0]:
     render_status_card(
@@ -343,6 +384,30 @@ with status_columns[2]:
 with st.sidebar:
     st.header("📚 Your documents")
     st.caption("Build your private college knowledge base.")
+    indexing_enabled = (
+        ollama_connected and embedding_model_available and index_compatible
+    )
+    if not ollama_connected:
+        st.warning(
+            f"{ollama_message} If this app is deployed, configure OLLAMA_HOST "
+            "to an Ollama API endpoint reachable by the deployed app; localhost "
+            "points to the app host, not your computer."
+        )
+    elif not embedding_model_available:
+        st.warning(
+            f"PDF indexing is disabled because {EMBEDDING_MODEL} is missing. "
+            f"Install it on the Ollama host with: ollama pull {EMBEDDING_MODEL}"
+        )
+    elif not index_compatible:
+        st.warning(
+            "PDF indexing is disabled because the existing ChromaDB index "
+            "could not be validated. Resolve the ChromaDB error shown above first."
+        )
+    if ollama_connected and not chat_model_available:
+        st.warning(
+            f"Questions cannot be answered because {CHAT_MODEL} is missing. "
+            f"Install it on the Ollama host with: ollama pull {CHAT_MODEL}"
+        )
     uploads = st.file_uploader(
         "Choose text-based PDF files",
         type=["pdf"],
@@ -358,7 +423,7 @@ with st.sidebar:
     )
     if st.button(
         "Index uploaded PDFs",
-        disabled=not uploads or not ollama_connected or not embedding_model_available,
+        disabled=not uploads or not indexing_enabled,
     ):
         for uploaded_file in uploads or []:
             raw_bytes = uploaded_file.getvalue()
@@ -368,6 +433,7 @@ with st.sidebar:
                     st.info(f"{uploaded_file.name} is already indexed.")
                     continue
                 with st.spinner(f"Reading and indexing {uploaded_file.name}..."):
+                    store.ensure_embedding_model(embedder.embed_texts)
                     pages = extract_pdf_pages(raw_bytes, uploaded_file.name)
                     chunks = chunk_pages(pages)
                     vectors = embedder.embed_texts([chunk.text for chunk in chunks])
@@ -444,6 +510,20 @@ if submitted:
     st.session_state.pop("sources", None)
     if not question.strip():
         st.warning("Enter a question before asking.")
+    elif indexed_count is None:
+        st.error("The indexed document library could not be checked. See the ChromaDB error above.")
+    elif indexed_count == 0:
+        st.error("No documents are indexed. Upload and index a PDF before asking a question.")
+    elif not ollama_connected:
+        st.error(ollama_message)
+    elif not embedding_model_available:
+        st.error(f"The embedding model is missing. Install it with: ollama pull {EMBEDDING_MODEL}")
+    elif not index_compatible:
+        st.error("The indexed documents could not be validated. Resolve the ChromaDB error above.")
+    elif not chroma_ready:
+        st.error("The indexed document library is unavailable. Resolve the ChromaDB error above.")
+    elif not chat_model_available:
+        st.error(f"The answer model is missing. Install it with: ollama pull {CHAT_MODEL}")
     else:
         try:
             with st.spinner("Searching your documents and preparing an answer..."):
@@ -485,6 +565,7 @@ if "answer" in st.session_state:
                 unsafe_allow_html=True,
             )
             with st.expander("View supporting passage"):
+                st.caption(f"Cosine distance: {source.distance:.3f}")
                 st.write(source.text)
 
 st.markdown(

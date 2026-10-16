@@ -1,16 +1,20 @@
 import hashlib
 import logging
 import math
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import chromadb
 from chromadb.config import Settings
 
+from embeddings import EMBEDDING_MODEL
 from models import DocumentChunk, RetrievedChunk
 
 
 COLLECTION_NAME = "college_documents"
+EMBEDDING_MODEL_KEY = "embedding_model"
+REEMBED_BATCH_SIZE = 64
 logger = logging.getLogger(__name__)
 
 
@@ -31,14 +35,106 @@ class ChromaVectorStore:
             )
             self.collection = self.client.get_or_create_collection(
                 name=COLLECTION_NAME,
-                metadata={"hnsw:space": "cosine"},
+                metadata={
+                    "hnsw:space": "cosine",
+                    EMBEDDING_MODEL_KEY: EMBEDDING_MODEL,
+                },
             )
+            self._embedding_model_verified = self.collection.count() == 0
         except Exception as error:
             logger.exception("Failed to open local ChromaDB at %s.", path)
             raise VectorStoreError(
                 "Could not open the local ChromaDB database. Check that the "
                 "chroma_db folder is writable."
             ) from error
+
+    def ensure_embedding_model(
+        self, embed_texts: Callable[[Sequence[str]], list[list[float]]]
+    ) -> None:
+        if self._embedding_model_verified:
+            return
+
+        try:
+            count = self.collection.count()
+            if count == 0:
+                self._embedding_model_verified = True
+                return
+        except Exception as error:
+            logger.exception("Could not prepare the ChromaDB collection for indexing.")
+            raise VectorStoreError(
+                "Could not prepare the ChromaDB collection for embedding validation."
+            ) from error
+
+        offset = 0
+        while offset < count:
+            try:
+                result = self.collection.get(
+                    limit=REEMBED_BATCH_SIZE,
+                    offset=offset,
+                    include=["documents", "metadatas"],
+                )
+                ids = result["ids"]
+                documents = result["documents"]
+                metadatas = result["metadatas"]
+            except Exception as error:
+                logger.exception("Could not read stored chunks for re-embedding.")
+                raise VectorStoreError(
+                    "Could not read existing document chunks for re-embedding."
+                ) from error
+
+            if (
+                not ids
+                or documents is None
+                or metadatas is None
+                or len(ids) != len(documents)
+                or len(ids) != len(metadatas)
+                or any(
+                    not isinstance(text, str) or not text.strip()
+                    for text in documents
+                )
+                or any(not isinstance(item, dict) for item in metadatas)
+            ):
+                raise VectorStoreError(
+                    "The existing ChromaDB collection has incomplete document data "
+                    "and cannot be safely re-embedded."
+                )
+
+            if all(
+                item.get(EMBEDDING_MODEL_KEY) == EMBEDDING_MODEL
+                for item in metadatas
+            ):
+                offset += len(ids)
+                continue
+
+            vectors = embed_texts(documents)
+            self._validate_embeddings(vectors, len(documents))
+            updated_metadatas = [
+                {**metadata, EMBEDDING_MODEL_KEY: EMBEDDING_MODEL}
+                for metadata in metadatas
+            ]
+            try:
+                self.collection.upsert(
+                    ids=ids,
+                    documents=documents,
+                    metadatas=updated_metadatas,
+                    embeddings=vectors,
+                )
+            except Exception as error:
+                logger.exception(
+                    "Could not replace stored vectors during re-embedding."
+                )
+                if "dimension" in str(error).casefold():
+                    raise VectorStoreError(
+                        "The existing ChromaDB collection uses an incompatible "
+                        "embedding dimension and was not marked ready. Back up the "
+                        "database and re-index its PDFs with nomic-embed-text."
+                    ) from error
+                raise VectorStoreError(
+                    "Could not replace stored vectors during re-embedding."
+                ) from error
+            offset += len(ids)
+
+        self._embedding_model_verified = True
 
     def has_document(self, document_id: str) -> bool:
         try:
@@ -65,21 +161,12 @@ class ChromaVectorStore:
         chunks: list[DocumentChunk],
         embeddings: list[list[float]],
     ) -> None:
+        self._require_compatible_embedding_model()
         if len(chunks) != len(embeddings):
             raise ValueError("Every document chunk must have exactly one embedding.")
         if not chunks:
             raise ValueError("Cannot store a document without text chunks.")
-        if any(not embedding for embedding in embeddings):
-            raise ValueError("Document embeddings cannot be empty.")
-        dimensions = {len(embedding) for embedding in embeddings}
-        if len(dimensions) != 1:
-            raise ValueError("All document embeddings must have the same dimension.")
-        if any(
-            not math.isfinite(value)
-            for embedding in embeddings
-            for value in embedding
-        ):
-            raise ValueError("Document embeddings must contain finite numbers.")
+        self._validate_embeddings(embeddings, len(chunks))
 
         ids = [
             f"{document_id}:{chunk.page_number}:{chunk.chunk_index}:"
@@ -96,6 +183,7 @@ class ChromaVectorStore:
                         "page_number": chunk.page_number,
                         "chunk_index": chunk.chunk_index,
                         "document_id": document_id,
+                        EMBEDDING_MODEL_KEY: EMBEDDING_MODEL,
                     }
                     for chunk in chunks
                 ],
@@ -114,6 +202,7 @@ class ChromaVectorStore:
     def search(
         self, query_embedding: list[float], limit: int = 3
     ) -> list[RetrievedChunk]:
+        self._require_compatible_embedding_model()
         if limit <= 0:
             return []
         try:
@@ -171,3 +260,29 @@ class ChromaVectorStore:
         except Exception as error:
             logger.exception("Could not remove document %s from ChromaDB.", document_id)
             raise VectorStoreError("Could not remove the indexed document.") from error
+
+    def _require_compatible_embedding_model(self) -> None:
+        if not self._embedding_model_verified:
+            raise VectorStoreError(
+                "The ChromaDB collection has unverified or incompatible embeddings. "
+                "Re-embed the stored chunks with nomic-embed-text before searching "
+                "or adding documents."
+            )
+
+    @staticmethod
+    def _validate_embeddings(
+        embeddings: list[list[float]], expected_count: int
+    ) -> None:
+        if len(embeddings) != expected_count:
+            raise ValueError("Every text must have exactly one embedding.")
+        if any(not embedding for embedding in embeddings):
+            raise ValueError("Document embeddings cannot be empty.")
+        dimensions = {len(embedding) for embedding in embeddings}
+        if len(dimensions) != 1:
+            raise ValueError("All document embeddings must have the same dimension.")
+        if any(
+            not math.isfinite(value)
+            for embedding in embeddings
+            for value in embedding
+        ):
+            raise ValueError("Document embeddings must contain finite numbers.")

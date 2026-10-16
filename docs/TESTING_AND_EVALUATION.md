@@ -13,8 +13,9 @@ The tests use fake Ollama clients and temporary Chroma directories. They do not
 require the live Ollama service, downloaded models, network access, or actual
 college documents. Coverage includes PDF extraction and errors, chunk boundaries
 and metadata, embedding failures, model/service status, Chroma persistence and
-deletion, duplicate IDs, retrieval filtering, exact refusal without relevant
-evidence, and evaluation metrics.
+deletion, duplicate IDs, legacy embedding re-indexing, end-to-end PDF-to-answer
+flow for direct/paraphrased/irrelevant/absent questions, exact refusal handling,
+and evaluation metrics.
 
 ## Question dataset
 
@@ -50,18 +51,29 @@ relevance, groundedness, clarity, and completeness, and document notes.
 
 ## Metric definitions and limitations
 
-- **Retrieval accuracy:** number of questions with the expected retrieval
-  outcome divided by all 50 questions. Answerable items are correct when the
-  expected source appears among retrieved passages. Unanswerable items are
-  correct when no sufficiently relevant passage is returned.
+- **Retrieval accuracy:** answerable questions whose expected source appears
+  among retrieved passages divided by the 40 answerable questions. It does not
+  mix retrieval accuracy with the separate absent-answer test.
 - **Safe refusal rate:** unanswerable questions answered with the exact required
   string, divided by the 10 unanswerable questions.
 - **Answer quality:** correctness, relevance, groundedness, clarity, and
   completeness, each human-rated 1–5. These must not be reported as measured
   until the reviewer completes the ratings.
 
-Actual values are produced only by running `evaluate.py` against the indexed
-fixture with both local models. No evaluation values are prefilled or claimed
-here. Fixture results do not establish performance on public or real college
-documents. The limited one-document dataset is not a substitute for broader
+The 50-question fixture was run in this environment with the local
+`nomic-embed-text` and `llama3.2:3b` models on 2026-10-16. All 40 answerable
+questions retrieved the expected source and produced a non-refusal answer; all
+10 unanswerable questions returned the exact refusal. The unanswerable examples
+also retrieved candidate passages, confirming that similarity alone does not
+establish answerability. These are fixture results, not a claim of performance
+on public or real college documents. Answer quality still needs human review,
+and the limited one-document dataset is not a substitute for broader
 retrieval/grounding evaluation.
+
+The live distance check against the bundled questions found the largest
+answerable cosine distance at 0.6331, so the configured 0.64 cutoff retains all
+answerable examples with the tested model. The unanswerable distances overlap
+that range; no cosine cutoff alone can reliably separate them without dropping
+answerable questions. The locally hosted chat model therefore receives the
+retrieved evidence and must return an explicit supported/unsupported result;
+the app enforces the exact refusal for unsupported output.

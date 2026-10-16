@@ -7,7 +7,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from app_services import build_rag_service
+from app_services import (
+    build_rag_service,
+    resolve_ollama_access_headers,
+    resolve_ollama_host,
+)
 from embeddings import EmbeddingServiceError, OllamaEmbedder
 from llm_service import LLMServiceError
 from models import RetrievedChunk
@@ -23,6 +27,16 @@ MAX_RESULT_COUNT = 10
 
 ServiceComponents = tuple[ChromaVectorStore, OllamaEmbedder, RAGService]
 ServiceBuilder = Callable[[str | Path], ServiceComponents]
+
+
+def _build_configured_services(database_path: str | Path) -> ServiceComponents:
+    ollama_host = resolve_ollama_host()
+    access_headers = resolve_ollama_access_headers(ollama_host)
+    return build_rag_service(
+        database_path,
+        ollama_host=ollama_host,
+        access_headers=access_headers,
+    )
 
 
 def _validate_query(query: str) -> str:
@@ -60,7 +74,7 @@ def create_mcp_server(
         destructiveHint=False,
         openWorldHint=False,
     )
-    build_services = service_builder or build_rag_service
+    build_services = service_builder or _build_configured_services
     components: ServiceComponents | None = None
 
     def get_components() -> ServiceComponents:

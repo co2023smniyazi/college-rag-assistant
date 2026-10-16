@@ -22,14 +22,14 @@ def test_dataset_has_50_balanced_question_categories(project_root) -> None:
     )
 
 
-def test_retrieval_accuracy_uses_all_questions() -> None:
+def test_retrieval_accuracy_counts_only_answerable_questions() -> None:
     results = [
         {"answerable": True, "retrieval_correct": True},
         {"answerable": True, "retrieval_correct": False},
-        {"answerable": False, "retrieval_correct": True},
+        {"answerable": False, "retrieval_correct": False},
     ]
 
-    assert calculate_retrieval_accuracy(results) == pytest.approx(200 / 3)
+    assert calculate_retrieval_accuracy(results) == 50
 
 
 def test_safe_refusal_rate_counts_only_exact_refusals() -> None:

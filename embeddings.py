@@ -37,9 +37,9 @@ class OllamaEmbedder:
             return [[float(value) for value in vector] for vector in embeddings]
         except EmbeddingServiceError:
             raise
-        except Exception as error:
-            logger.exception("Ollama embedding generation failed.")
+        except Exception:
+            logger.error("Ollama embedding generation failed.")
             raise EmbeddingServiceError(
                 "Could not generate embeddings. Check that Ollama is running and "
                 "run `ollama pull nomic-embed-text` if the model is missing."
-            ) from error
+            ) from None

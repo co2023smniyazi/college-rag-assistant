@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+import mcp_server
 from embeddings import EmbeddingServiceError
 from llm_service import LLMServiceError, UNKNOWN_ANSWER
 from mcp_server import create_mcp_server
@@ -106,6 +107,38 @@ def test_registers_read_only_rag_tools_with_useful_schemas() -> None:
         == 10
     )
     assert tools["search_college_documents"].annotations.readOnlyHint is True
+
+
+def test_mcp_uses_remote_ollama_and_access_environment(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "https://ollama.example")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "test-client-secret")
+    calls = []
+    store = FakeStore()
+    service = RAGService(FakeRetriever(), FakeAnswerGenerator())
+
+    def build_services(database_path, **kwargs):
+        calls.append((database_path, kwargs))
+        return store, object(), service
+
+    monkeypatch.setattr(mcp_server, "build_rag_service", build_services)
+    server = create_mcp_server(database_path=tmp_path / "chroma")
+
+    result = invoke_tool(server, "list_indexed_documents")
+
+    assert result["status"] == "empty"
+    assert calls == [
+        (
+            tmp_path / "chroma",
+            {
+                "ollama_host": "https://ollama.example",
+                "access_headers": {
+                    "CF-Access-Client-Id": "test-client-id",
+                    "CF-Access-Client-Secret": "test-client-secret",
+                },
+            },
+        )
+    ]
 
 
 def test_lists_indexed_documents_and_handles_empty_library() -> None:

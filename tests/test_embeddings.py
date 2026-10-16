@@ -33,11 +33,17 @@ def test_embedder_handles_empty_input_without_calling_ollama() -> None:
     assert client.call is None
 
 
-def test_embedder_surfaces_service_errors() -> None:
-    client = FakeEmbeddingClient(error=ConnectionError("offline"))
+def test_embedder_surfaces_service_errors_without_logging_credentials(caplog) -> None:
+    secret = "test-access-client-secret"
+    client = FakeEmbeddingClient(error=ConnectionError(f"offline: {secret}"))
 
-    with pytest.raises(EmbeddingServiceError, match="Check that Ollama is running"):
+    with pytest.raises(
+        EmbeddingServiceError, match="Check that Ollama is running"
+    ) as error:
         OllamaEmbedder(client=client).embed_texts(["question"])
+
+    assert secret not in str(error.value)
+    assert secret not in caplog.text
 
 
 def test_embedder_rejects_empty_text() -> None:

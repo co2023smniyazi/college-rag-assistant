@@ -4,11 +4,11 @@ from llm_service import UNKNOWN_ANSWER
 
 
 def calculate_retrieval_accuracy(results: Iterable[Mapping[str, object]]) -> float:
-    all_questions = list(results)
-    if not all_questions:
+    answerable = [row for row in results if row["answerable"] is True]
+    if not answerable:
         return 0.0
-    correct = sum(row["retrieval_correct"] is True for row in all_questions)
-    return correct / len(all_questions) * 100
+    correct = sum(row["retrieval_correct"] is True for row in answerable)
+    return correct / len(answerable) * 100
 
 
 def calculate_safe_refusal_rate(results: Iterable[Mapping[str, object]]) -> float:

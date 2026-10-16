@@ -1,8 +1,10 @@
 import logging
 import os
 from collections.abc import Mapping
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import ollama
 
@@ -14,6 +16,14 @@ from vector_store import ChromaVectorStore
 
 
 logger = logging.getLogger(__name__)
+CF_ACCESS_CLIENT_ID = "CF_ACCESS_CLIENT_ID"
+CF_ACCESS_CLIENT_SECRET = "CF_ACCESS_CLIENT_SECRET"
+CF_ACCESS_CLIENT_ID_HEADER = "CF-Access-Client-Id"
+CF_ACCESS_CLIENT_SECRET_HEADER = "CF-Access-Client-Secret"
+
+
+class OllamaAccessConfigurationError(ValueError):
+    """Raised when Cloudflare Access credentials are incomplete or invalid."""
 
 
 def resolve_ollama_host(
@@ -33,9 +43,12 @@ def resolve_ollama_host(
 
 def get_ollama_status(
     ollama_host: str | None = None,
+    access_headers: Mapping[str, str] | None = None,
 ) -> tuple[bool, set[str], str]:
     try:
-        response: Any = create_ollama_client(ollama_host).list()
+        response: Any = create_ollama_client(
+            ollama_host, access_headers=access_headers
+        ).list()
         models = (
             response.get("models", [])
             if isinstance(response, Mapping)
@@ -52,7 +65,7 @@ def get_ollama_status(
                 names.add(name)
         return True, names, ""
     except Exception:
-        logger.exception("Could not check the configured Ollama service.")
+        logger.error("Could not check the configured Ollama service.")
         return (
             False,
             set(),
@@ -65,18 +78,77 @@ def model_is_available(model_name: str, installed_models: set[str]) -> bool:
     return model_name in installed_models or f"{model_name}:latest" in installed_models
 
 
-def create_ollama_client(host: str | None = None) -> ollama.Client:
+def create_ollama_client(
+    host: str | None = None,
+    access_headers: Mapping[str, str] | None = None,
+) -> ollama.Client:
     if host:
-        return ollama.Client(host=host)
+        client_options: dict[str, Any] = {"host": host}
+        if access_headers and not _is_local_ollama_host(host):
+            client_options["headers"] = dict(access_headers)
+        return ollama.Client(**client_options)
     return ollama.Client()
+
+
+def resolve_ollama_access_headers(
+    host: str | None,
+    secrets: Mapping[str, Any] | None = None,
+) -> dict[str, str] | None:
+    if not host or _is_local_ollama_host(host):
+        return None
+
+    environment_id = os.environ.get(CF_ACCESS_CLIENT_ID)
+    environment_secret = os.environ.get(CF_ACCESS_CLIENT_SECRET)
+    if environment_id is not None or environment_secret is not None:
+        client_id, client_secret = environment_id, environment_secret
+    elif secrets is not None:
+        client_id = secrets.get(CF_ACCESS_CLIENT_ID)
+        client_secret = secrets.get(CF_ACCESS_CLIENT_SECRET)
+    else:
+        return None
+
+    if client_id is None and client_secret is None:
+        return None
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise OllamaAccessConfigurationError(
+            "Both Cloudflare Access client credentials must be configured together."
+        )
+    if not isinstance(client_secret, str) or not client_secret.strip():
+        raise OllamaAccessConfigurationError(
+            "Both Cloudflare Access client credentials must be configured together."
+        )
+    if urlsplit(host).scheme.casefold() != "https":
+        raise OllamaAccessConfigurationError(
+            "Cloudflare Access credentials require an HTTPS Ollama endpoint."
+        )
+
+    return {
+        CF_ACCESS_CLIENT_ID_HEADER: client_id,
+        CF_ACCESS_CLIENT_SECRET_HEADER: client_secret,
+    }
+
+
+def _is_local_ollama_host(host: str) -> bool:
+    parsed_host = urlsplit(host).hostname
+    if parsed_host is None:
+        parsed_host = urlsplit(f"//{host}").hostname
+    if parsed_host is None:
+        return False
+    if parsed_host.casefold() == "localhost":
+        return True
+    try:
+        return ip_address(parsed_host).is_loopback
+    except ValueError:
+        return False
 
 
 def build_rag_service(
     database_path: str | Path,
     ollama_host: str | None = None,
+    access_headers: Mapping[str, str] | None = None,
 ) -> tuple[ChromaVectorStore, OllamaEmbedder, RAGService]:
     store = ChromaVectorStore(path=database_path)
-    client = create_ollama_client(ollama_host)
+    client = create_ollama_client(ollama_host, access_headers=access_headers)
     embedder = OllamaEmbedder(client=client)
     service = RAGService(
         retriever=Retriever(embedder=embedder, store=store),

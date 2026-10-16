@@ -4,7 +4,7 @@ from vector_store import ChromaVectorStore
 
 
 DEFAULT_RESULT_COUNT = 3
-MAX_COSINE_DISTANCE = 0.8
+MAX_COSINE_DISTANCE = 0.64
 
 
 class Retriever:
@@ -28,6 +28,7 @@ class Retriever:
             raise ValueError("Enter a question before asking.")
         if limit <= 0:
             raise ValueError("limit must be greater than zero.")
+        self.store.ensure_embedding_model(self.embedder.embed_texts)
         if self.store.is_empty():
             return []
 

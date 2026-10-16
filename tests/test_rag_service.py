@@ -81,6 +81,9 @@ def test_retriever_filters_low_relevance_context() -> None:
             return [[1.0, 0.0]]
 
     class FakeStore:
+        def ensure_embedding_model(self, embed_texts):
+            pass
+
         def is_empty(self):
             return False
 
@@ -101,6 +104,9 @@ def test_retriever_returns_empty_without_calling_embedder_for_empty_store() -> N
             raise AssertionError("There is nothing to embed when no documents exist.")
 
     class EmptyStore:
+        def ensure_embedding_model(self, embed_texts):
+            pass
+
         def is_empty(self):
             return True
 
@@ -110,7 +116,9 @@ def test_retriever_returns_empty_without_calling_embedder_for_empty_store() -> N
 class FakeChatClient:
     def __init__(self, response=None, error=None):
         self.response = response or {
-            "message": {"content": "Attendance must be at least 75%."}
+            "message": {
+                "content": '{"answer":"Attendance must be at least 75%."}'
+            }
         }
         self.error = error
         self.call = None
@@ -135,10 +143,86 @@ def test_answer_generator_uses_context_and_required_local_model() -> None:
     assert client.call["messages"][0]["content"] == SYSTEM_INSTRUCTION
     assert "[Source: rules.pdf, page 3]" in client.call["messages"][1]["content"]
     assert "Attendance is 75%." in client.call["messages"][1]["content"]
+    assert client.call["format"]["required"] == ["answer"]
 
 
-def test_answer_generator_surfaces_ollama_errors() -> None:
-    with pytest.raises(LLMServiceError, match="Check that Ollama is running"):
-        OllamaAnswerGenerator(client=FakeChatClient(error=ConnectionError())).generate(
+def test_answer_generator_normalizes_unsupported_answers_to_exact_refusal() -> None:
+    client = FakeChatClient(
+        {
+            "message": {
+                "content": (
+                    '{"answer":"The context does not specify the answer."}'
+                )
+            }
+        }
+    )
+
+    answer = OllamaAnswerGenerator(client=client).generate(
+        "What score guarantees a scholarship?",
+        [RetrievedChunk("rules.pdf", 1, "Attendance is 75%.", 0.1)],
+    )
+
+    assert answer == UNKNOWN_ANSWER
+
+
+def test_answer_generator_normalizes_noncanonical_missing_information() -> None:
+    client = FakeChatClient(
+        {"message": {"content": '{"answer":"No induction is mentioned in the context."}'}}
+    )
+
+    answer = OllamaAnswerGenerator(client=client).generate(
+        "What induction is required?",
+        [RetrievedChunk("rules.pdf", 1, "A safety briefing is required.", 0.1)],
+    )
+
+    assert answer == UNKNOWN_ANSWER
+
+
+def test_answer_generator_corrects_yes_that_conflicts_with_explicit_rule() -> None:
+    client = FakeChatClient(
+        {
+            "message": {
+                "content": (
+                    '{"answer":"Yes, applicants must have no active backlogs."}'
+                )
+            }
+        }
+    )
+
+    answer = OllamaAnswerGenerator(client=client).generate(
+        "Can placement applicants have active backlogs?",
+        [
+            RetrievedChunk(
+                "rules.pdf",
+                1,
+                "Placement applicants must have no active backlogs.",
+                0.1,
+            )
+        ],
+    )
+
+    assert answer == "No. Applicants must have no active backlogs."
+
+
+def test_answer_generator_rejects_invalid_structured_output() -> None:
+    client = FakeChatClient({"message": {"content": "not JSON"}})
+
+    with pytest.raises(LLMServiceError, match="invalid grounded answer"):
+        OllamaAnswerGenerator(client=client).generate(
             "question", [RetrievedChunk("rules.pdf", 1, "text", 0.1)]
         )
+
+
+def test_answer_generator_surfaces_ollama_errors_without_logging_credentials(
+    caplog,
+) -> None:
+    secret = "test-access-client-secret"
+    with pytest.raises(
+        LLMServiceError, match="Check that Ollama is running"
+    ) as error:
+        OllamaAnswerGenerator(
+            client=FakeChatClient(error=ConnectionError(f"offline: {secret}"))
+        ).generate("question", [RetrievedChunk("rules.pdf", 1, "text", 0.1)])
+
+    assert secret not in str(error.value)
+    assert secret not in caplog.text
