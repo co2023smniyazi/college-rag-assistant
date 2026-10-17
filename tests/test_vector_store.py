@@ -44,6 +44,35 @@ def test_chroma_persists_chunks_and_source_metadata(tmp_path) -> None:
     assert persisted[0].page_number == 4
 
 
+def test_remote_chroma_client_uses_tls_and_bearer_header(monkeypatch) -> None:
+    client = chromadb.EphemeralClient(settings=Settings(allow_reset=True))
+    client.reset()
+    calls = []
+
+    def fake_http_client(**kwargs):
+        calls.append(kwargs)
+        return client
+
+    monkeypatch.setattr(chromadb, "HttpClient", fake_http_client)
+
+    ChromaVectorStore(
+        host="chroma.example.com",
+        port=8443,
+        ssl=True,
+        auth_token="test-chroma-token",
+    )
+
+    assert calls == [
+        {
+            "host": "chroma.example.com",
+            "port": 8443,
+            "ssl": True,
+            "headers": {"Authorization": "Bearer test-chroma-token"},
+            "settings": Settings(anonymized_telemetry=False),
+        }
+    ]
+
+
 def test_chroma_removes_all_chunks_for_a_document(tmp_path) -> None:
     store = ChromaVectorStore(path=tmp_path / "chroma")
     document_id = document_id_for(b"one pdf")

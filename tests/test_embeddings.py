@@ -38,7 +38,7 @@ def test_embedder_surfaces_service_errors_without_logging_credentials(caplog) ->
     client = FakeEmbeddingClient(error=ConnectionError(f"offline: {secret}"))
 
     with pytest.raises(
-        EmbeddingServiceError, match="Check that Ollama is running"
+        EmbeddingServiceError, match="configured Ollama endpoint is reachable"
     ) as error:
         OllamaEmbedder(client=client).embed_texts(["question"])
 

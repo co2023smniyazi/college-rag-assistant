@@ -218,7 +218,7 @@ def test_answer_generator_surfaces_ollama_errors_without_logging_credentials(
 ) -> None:
     secret = "test-access-client-secret"
     with pytest.raises(
-        LLMServiceError, match="Check that Ollama is running"
+        LLMServiceError, match="configured Ollama endpoint is reachable"
     ) as error:
         OllamaAnswerGenerator(
             client=FakeChatClient(error=ConnectionError(f"offline: {secret}"))

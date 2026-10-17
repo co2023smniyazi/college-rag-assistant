@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStoreError(RuntimeError):
-    """Raised when the local Chroma database cannot complete an operation."""
+    """Raised when the configured Chroma database cannot complete an operation."""
 
 
 def document_id_for(pdf_bytes: bytes) -> str:
@@ -27,12 +27,37 @@ def document_id_for(pdf_bytes: bytes) -> str:
 
 
 class ChromaVectorStore:
-    def __init__(self, path: str | Path = "chroma_db", client: Any | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path = "chroma_db",
+        client: Any | None = None,
+        *,
+        host: str | None = None,
+        port: int = 8000,
+        ssl: bool = False,
+        auth_token: str | None = None,
+    ) -> None:
         try:
-            self.client = client or chromadb.PersistentClient(
-                path=str(path),
-                settings=Settings(anonymized_telemetry=False),
-            )
+            if client is not None:
+                self.client = client
+            elif host:
+                headers = (
+                    {"Authorization": f"Bearer {auth_token}"}
+                    if auth_token
+                    else None
+                )
+                self.client = chromadb.HttpClient(
+                    host=host,
+                    port=port,
+                    ssl=ssl,
+                    headers=headers,
+                    settings=Settings(anonymized_telemetry=False),
+                )
+            else:
+                self.client = chromadb.PersistentClient(
+                    path=str(path),
+                    settings=Settings(anonymized_telemetry=False),
+                )
             self.collection = self.client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 metadata={
@@ -42,6 +67,12 @@ class ChromaVectorStore:
             )
             self._embedding_model_verified = self.collection.count() == 0
         except Exception as error:
+            if host:
+                logger.exception("Failed to connect to the configured ChromaDB server.")
+                raise VectorStoreError(
+                    "Could not connect to the configured remote ChromaDB server. "
+                    "Check its hostname, port, TLS, credentials, and availability."
+                ) from error
             logger.exception("Failed to open local ChromaDB at %s.", path)
             raise VectorStoreError(
                 "Could not open the local ChromaDB database. Check that the "

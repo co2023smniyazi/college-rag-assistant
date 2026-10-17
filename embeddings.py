@@ -40,6 +40,6 @@ class OllamaEmbedder:
         except Exception:
             logger.error("Ollama embedding generation failed.")
             raise EmbeddingServiceError(
-                "Could not generate embeddings. Check that Ollama is running and "
-                "run `ollama pull nomic-embed-text` if the model is missing."
+                "Could not generate embeddings. Check that the configured Ollama "
+                "endpoint is reachable and has `nomic-embed-text` installed."
             ) from None

@@ -1,5 +1,7 @@
 streamlit==1.38.0
+# Supports both local PersistentClient and remote Chroma HttpClient deployments.
 chromadb==0.5.15
 pypdf==5.1.0
+# The same client talks to local Ollama or a configured remote Ollama endpoint.
 ollama==0.6.3
 posthog<5

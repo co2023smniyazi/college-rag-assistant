@@ -2,6 +2,7 @@ from chunker import chunk_pages
 from document_loader import extract_pdf_pages
 from embeddings import EMBEDDING_MODEL, OllamaEmbedder
 from llm_service import UNKNOWN_ANSWER
+from app_services import index_uploaded_pdf
 from rag_service import RAGService
 from retriever import Retriever
 from vector_store import ChromaVectorStore, document_id_for
@@ -49,11 +50,14 @@ def test_pdf_to_answer_pipeline_direct_paraphrased_irrelevant_and_absent(
     embedder = OllamaEmbedder(client=embedding_client)
     store = ChromaVectorStore(path=tmp_path / "chroma")
 
-    store.add_chunks(
-        document_id_for(pdf_bytes),
-        chunks,
-        embedder.embed_texts([chunk.text for chunk in chunks]),
-    )
+    indexed = index_uploaded_pdf("college_rules.pdf", pdf_bytes, store, embedder)
+    duplicate = index_uploaded_pdf("college_rules.pdf", pdf_bytes, store, embedder)
+    assert indexed.already_indexed is False
+    assert indexed.page_count == 1
+    assert indexed.chunk_count == len(chunks)
+    assert duplicate.already_indexed is True
+    assert store.has_document(document_id_for(pdf_bytes))
+
     answer_generator = ContextEchoAnswerGenerator()
     service = RAGService(Retriever(embedder, store), answer_generator)
 

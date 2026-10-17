@@ -48,8 +48,105 @@ def test_ollama_host_uses_streamlit_secret_when_environment_is_unset(
 
 def test_ollama_host_defaults_to_local_client_when_unconfigured(monkeypatch) -> None:
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_REMOTE_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODE", raising=False)
 
     assert app_services.resolve_ollama_host() is None
+
+
+def test_local_mode_does_not_use_remote_host(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODE", "local")
+    monkeypatch.setenv("OLLAMA_REMOTE_HOST", REMOTE_OLLAMA_HOST)
+    monkeypatch.delenv("OLLAMA_LOCAL_HOST", raising=False)
+
+    assert app_services.resolve_ollama_host() is None
+
+
+def test_legacy_loopback_host_keeps_custom_local_address(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_MODE", raising=False)
+    monkeypatch.delenv("OLLAMA_REMOTE_HOST", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11435")
+
+    assert app_services.resolve_ollama_host() == "http://127.0.0.1:11435"
+
+
+def test_remote_mode_requires_a_non_loopback_host(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODE", "remote")
+    monkeypatch.delenv("OLLAMA_REMOTE_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+
+    with pytest.raises(
+        app_services.OllamaAccessConfigurationError,
+        match="Set OLLAMA_REMOTE_HOST",
+    ):
+        app_services.resolve_ollama_host()
+
+    monkeypatch.setenv("OLLAMA_REMOTE_HOST", "http://localhost:11434")
+    with pytest.raises(
+        app_services.OllamaAccessConfigurationError,
+        match="cannot use localhost",
+    ):
+        app_services.resolve_ollama_host()
+
+
+def test_remote_host_supports_generic_bearer_secret(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    assert app_services.resolve_ollama_access_headers(
+        REMOTE_OLLAMA_HOST,
+        {"OLLAMA_API_KEY": "private-test-token"},
+    ) == {"Authorization": "Bearer private-test-token"}
+
+
+def test_remote_api_key_requires_https() -> None:
+    with pytest.raises(
+        app_services.OllamaAccessConfigurationError,
+        match="credentials require an HTTPS",
+    ):
+        app_services.resolve_ollama_access_headers(
+            "http://ollama.example",
+            {"OLLAMA_API_KEY": "private-test-token"},
+        )
+
+
+def test_chroma_local_default_and_remote_configuration(monkeypatch) -> None:
+    for name in ("CHROMA_HOST", "CHROMA_PORT", "CHROMA_SSL", "CHROMA_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert app_services.resolve_chroma_settings() == (None, 8000, False, None)
+    assert app_services.resolve_chroma_settings(
+        {
+            "CHROMA_HOST": "chroma.example.com",
+            "CHROMA_PORT": 8443,
+            "CHROMA_SSL": True,
+            "CHROMA_AUTH_TOKEN": "private-test-token",
+        }
+    ) == ("chroma.example.com", 8443, True, "private-test-token")
+
+
+def test_chroma_rejects_token_without_tls() -> None:
+    with pytest.raises(
+        app_services.ChromaConfigurationError,
+        match="CHROMA_SSL=true",
+    ):
+        app_services.resolve_chroma_settings(
+            {
+                "CHROMA_HOST": "chroma.example.com",
+                "CHROMA_AUTH_TOKEN": "private-test-token",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"CHROMA_HOST": "localhost"}, "cannot use localhost"),
+        ({"CHROMA_HOST": "chroma.example:bad"}, "valid hostname"),
+    ],
+)
+def test_chroma_rejects_invalid_remote_hosts(settings, message) -> None:
+    with pytest.raises(app_services.ChromaConfigurationError, match=message):
+        app_services.resolve_chroma_settings(settings)
 
 
 def test_ollama_status_uses_configured_endpoint(monkeypatch) -> None:
@@ -153,7 +250,7 @@ def test_remote_ollama_rejects_incomplete_access_credentials(secrets) -> None:
 def test_cloudflare_access_credentials_require_https() -> None:
     with pytest.raises(
         app_services.OllamaAccessConfigurationError,
-        match="require an HTTPS Ollama endpoint",
+        match="credentials require an HTTPS",
     ):
         app_services.resolve_ollama_access_headers(
             "http://ollama.example",
@@ -232,7 +329,7 @@ def test_ollama_status_reports_unavailable_service(monkeypatch) -> None:
 
     assert connected is False
     assert models == set()
-    assert "OLLAMA_HOST" in message
+    assert "OLLAMA_REMOTE_HOST" in message
 
 
 def test_model_availability_accepts_latest_tag() -> None:

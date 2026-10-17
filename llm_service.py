@@ -114,8 +114,8 @@ class OllamaAnswerGenerator:
         except Exception:
             logger.error("Ollama answer generation failed.")
             raise LLMServiceError(
-                "Could not generate an answer. Check that Ollama is running and "
-                "run `ollama pull llama3.2:3b` if the model is missing."
+                "Could not generate an answer. Check that the configured Ollama "
+                "endpoint is reachable and has `llama3.2:3b` installed."
             ) from None
 
 

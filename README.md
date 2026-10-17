@@ -1,9 +1,10 @@
 # College RAG Assistant
 
-A question-answering app for college PDFs. It retrieves relevant passages and
-asks an Ollama model to answer from those passages. Ollama runs locally by
-default; if `OLLAMA_HOST` is configured, document text and questions are sent to
-that endpoint. When there is not enough relevant evidence, the answer is
+A question-answering app for a shared library of public college PDFs. It
+retrieves relevant passages and asks an Ollama model to answer from those
+passages. Local development uses local Ollama and Chroma by default; deployment
+can configure a remote Ollama endpoint and persistent remote Chroma server.
+When there is not enough relevant evidence, the answer is
 exactly: **Information not found in the available documents.**
 
 > The bundled PDF and its sample facts are fictional test data, not real college
@@ -14,13 +15,14 @@ exactly: **Information not found in the available documents.**
 - Upload multiple PDFs (up to 20 MB each), extract selectable text, and keep
   source filenames and 1-based page numbers.
 - Split text into 1,500-character chunks with 200-character overlap.
-- Use Ollama `nomic-embed-text` embeddings and persistent local ChromaDB;
+- Use Ollama `nomic-embed-text` embeddings with local ChromaDB or a configured
+  remote Chroma server;
   each chunk records its embedding model, and legacy unmarked chunks are
   re-embedded before retrieval.
 - Search for up to 10 relevant passages (3 by default), apply a cosine-distance
   cutoff calibrated against the bundled question set, and show distances and
   passage text for inspection.
-- Use Ollama `llama3.2:3b` for answers. Its structured answerability result is
+- Use Ollama `llama3.2:3b` for answers. Its structured JSON response is
   validated and unsupported answers become the exact required refusal.
 - List and safely remove indexed PDFs; identical PDF bytes are not indexed twice.
 - Show Ollama, model, and ChromaDB status in the interface.
@@ -40,8 +42,10 @@ Question -> Ollama question embedding -> Chroma similarity search -> relevance
          -> llama3.2:3b -> answer + retrieved source names/pages
 ```
 
-For local runs, Streamlit binds to `127.0.0.1` and ChromaDB data is kept in the
-ignored `chroma_db/` directory. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For local runs, ChromaDB data is kept in the ignored `chroma_db/` directory.
+For a cloud deployment, configure a reachable Ollama service and a remote
+Chroma server using durable storage; Streamlit Cloud's local filesystem is not
+persistent. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP server
 
@@ -154,129 +158,103 @@ python -m pip install -r requirements-dev.txt
 
 The Ollama desktop application normally starts its local service. If it is not
 running, start Ollama or run `ollama serve` in another terminal. The default
-local API address is `http://localhost:11434`. Set `OLLAMA_HOST` if using a
-different local or remote Ollama endpoint. The endpoint must be reachable from
-the process running this app and have both required models installed. For a
-remote Ollama server protected by Cloudflare Access, configure the optional
-service-token credentials described below.
+local API address is `http://localhost:11434`. The app defaults to local Ollama.
+For remote Ollama, set `OLLAMA_MODE=remote` and `OLLAMA_REMOTE_HOST` to an
+endpoint reachable from the app. The endpoint must have both required models
+installed. `OLLAMA_HOST` remains supported as a backwards-compatible remote
+host setting. Remote endpoints should use HTTPS; use `OLLAMA_API_KEY` for a
+reverse-proxy bearer token or the Cloudflare Access service-token credentials
+described below.
 
 ## Streamlit Community Cloud deployment
 
-### Python and dependencies
+### Required architecture
 
-The project was developed and tested with **Python 3.11.9**. Streamlit
-Community Cloud currently defaults new deployments to Python 3.12; select
-**Python 3.11** in Advanced settings to match the tested runtime. Root
-`requirements.txt` contains the packages imported by the Streamlit app. The MCP
-SDK and pytest are not needed by the web entrypoint and are in
-`requirements-mcp.txt` and `requirements-dev.txt`, respectively. Community
-Cloud should use the root `requirements.txt`.
+Streamlit Community Cloud cannot reach Ollama on your development computer via
+`localhost`, and its local filesystem is not durable storage. Deploy two
+separately reachable services:
 
-Check the production requirements locally:
+1. A secured Ollama server with **both** `llama3.2:3b` and
+   `nomic-embed-text`. Put it behind HTTPS and authentication (for example, an
+   authenticated reverse proxy or a Cloudflare Tunnel with an Access service
+   token). Do not expose Ollama's unauthenticated port to the public internet.
+2. A remote Chroma server with a persistent volume/disk attached. Protect it
+   with TLS and authentication. This app uses Chroma's HTTP client; data
+   persists across app restarts only if the Chroma server's backing storage is
+   durable. Run a server version compatible with the pinned Python Chroma
+   client.
 
-```powershell
-python -m pip install --dry-run --ignore-installed -r requirements.txt
-```
+The configured Chroma collection is deliberately shared: all visitors can
+search and remove documents. Only upload public, non-sensitive college PDFs.
+This app does not provide user accounts or per-user access control.
 
-The reported message **"Error installing requirements"** alone does not
-identify the failing package or resolver conflict. No Streamlit Cloud build log
-was available in this workspace, so the exact cause is not verified. Open the
-app in Community Cloud, select **Manage app**, and copy/download the complete
-build log, including the first `ERROR:` line and the selected Python version,
-to diagnose a specific Cloud failure.
+### Deploy on Streamlit Community Cloud
 
-### Deployment steps and Ollama configuration
+1. Push the application to the selected GitHub branch. In Streamlit Community
+   Cloud, create/select the app using this repository, branch, and `app.py`.
+2. Select Python 3.11 in Advanced settings. Use the repository's root
+   `requirements.txt`; no additional LLM provider package or paid API is used.
+3. In **Manage app → Settings → Secrets**, enter the service endpoints and
+   credentials. Replace all placeholders:
 
-1. In Streamlit Community Cloud, choose **Create app** and select this GitHub
-   repository, the intended branch, and `app.py` as the entrypoint.
-2. Open **Advanced settings** and select Python 3.11.
-3. Streamlit Cloud cannot connect to Ollama running on your PC using
-   `localhost`; that address points back to the Cloud app container. To use
-   the Ollama models on a Windows PC, create a Cloudflare Tunnel and protect
-   its public hostname with Cloudflare Access before adding the app secrets:
+   ```toml
+   OLLAMA_MODE = "remote"
+   OLLAMA_REMOTE_HOST = "https://ollama.example.com"
+   OLLAMA_API_KEY = "replace-with-reverse-proxy-bearer-token"
 
-   1. Confirm Ollama runs on the PC and both models are installed:
+   CHROMA_HOST = "chroma.example.com"
+   CHROMA_PORT = 443
+   CHROMA_SSL = true
+   CHROMA_AUTH_TOKEN = "replace-with-chroma-bearer-token"
+   ```
 
-      ```powershell
-      ollama list
-      ```
+   `OLLAMA_API_KEY` is optional if the endpoint is secured with Cloudflare
+   Access instead; for Access use `CF_ACCESS_CLIENT_ID` and
+   `CF_ACCESS_CLIENT_SECRET` instead of the bearer key. Credentials are sent
+   only in request headers to their configured HTTPS service. Never commit
+   `.streamlit/secrets.toml`, paste real credentials into source, or put
+   secrets in GitHub issues.
+4. Configure the Ollama server to have both models installed:
 
-      The output must include `llama3.2:3b` and `nomic-embed-text`.
-   2. Install `cloudflared` on that PC (for example, with
-      `winget install --id Cloudflare.cloudflared --exact`).
-   3. In the Cloudflare Zero Trust dashboard, create a **named Cloudflare
-      Tunnel** for the PC. Follow the dashboard's Windows instructions to run
-      the tunnel as a service. Keep the tunnel token private and never commit
-      or paste it into this repository.
-   4. In the tunnel's **Published application routes** (sometimes labelled
-      **Public Hostnames**), add a hostname such as
-      `ollama.yourdomain.com` and route it to `http://localhost:11434`.
-      Cloudflare DNS for the domain must be managed by Cloudflare.
-   5. In **Cloudflare Access → Applications**, create a self-hosted
-      application for that same hostname. Create a **Service Auth** policy
-      that allows only the service token you create under **Access → Service
-      credentials**. Do not leave the hostname publicly accessible without
-      this Access policy.
-   6. In Streamlit Community Cloud, open **Manage app → Settings → Secrets**
-      and add the HTTPS hostname and both service-token values:
+   ```sh
+   ollama pull llama3.2:3b
+   ollama pull nomic-embed-text
+   ollama list
+   ```
 
-      ```toml
-      OLLAMA_HOST = "https://ollama.yourdomain.com"
-      CF_ACCESS_CLIENT_ID = "your-service-token-client-id"
-      CF_ACCESS_CLIENT_SECRET = "your-service-token-client-secret"
-      ```
+   A remote host has to allow network traffic from Streamlit Community Cloud
+   and serve Ollama's API through the configured secure endpoint. A tunnel
+   service must stay running. `localhost` is not a valid remote setting.
+5. Configure the Chroma server with a durable mounted data directory and
+   bearer-token authentication matching the app secret. In this app config,
+   `CHROMA_HOST` is a hostname only; put the port and TLS setting in
+   `CHROMA_PORT` and `CHROMA_SSL`. If the Chroma service is unavailable, the
+   app shows an explicit database connection error.
+6. Save Secrets and reboot the app. Confirm the Ollama status is **Connected**,
+   the language model is **Ready**, and document search is ready after indexing.
+   Upload a public text-based PDF and select **Index uploaded PDFs**. Local
+   Chroma files are not uploaded automatically; documents must be indexed into
+   the configured remote collection.
+7. Test a directly worded question, a paraphrase, and a question unsupported
+   by the PDF. Confirm the evidence panels contain the retrieved pages and the
+   unsupported case returns exactly
+   `Information not found in the available documents.`.
 
-      Replace every example value. Keep the service token only in Streamlit
-      Secrets; do not put it in source code, a committed file, or a chat.
-   7. Restart the Streamlit app. Confirm Ollama shows **Connected** and both
-      models show **Ready** before uploading and indexing the PDF in the
-      deployed app. Your local Chroma index is not copied to Streamlit Cloud;
-      upload the PDF there and select **Index uploaded PDFs**.
+The Ollama endpoint and the embedding model are independently checked by
+listing models on that same Ollama service; both chat and document/question
+embeddings use the configured Ollama endpoint. Secrets may also be supplied as
+environment variables. Local development defaults to the local Ollama client
+and `chroma_db/` when remote configuration is omitted.
 
-   If Ollama is on a different remote server already, use its secured HTTPS
-   endpoint and configure Access credentials if required. Do not use the
-   Streamlit app URL or the local model directory as `OLLAMA_HOST`.
+This design does **not** switch to a paid hosted LLM API. Self-hosting the
+models and Chroma requires a reachable server, storage, bandwidth, and
+maintenance; any hosting/tunnel costs depend on the provider and chosen plan.
+Check provider pricing before deploying. The repository cannot provision
+those services or confirm they are reachable from your Cloud app.
 
-The simplest app secrets shape for an already-secured remote Ollama server is:
-
-```toml
-OLLAMA_HOST = "https://ollama.example.com"
-```
-
-The Streamlit app reads the `OLLAMA_HOST` environment variable first, then
-`st.secrets["OLLAMA_HOST"]`. The configured endpoint must be network-reachable
-from Cloud, have both `nomic-embed-text` and `llama3.2:3b` installed, and be
-appropriately secured. For a Cloudflare Access-protected HTTPS endpoint,
-configure both service-token secrets in Streamlit Community Cloud under
-**Manage app → Settings → Secrets**:
-
-```toml
-OLLAMA_HOST = "https://<your-access-protected-ollama-host>"
-CF_ACCESS_CLIENT_ID = "<Cloudflare service-token client ID>"
-CF_ACCESS_CLIENT_SECRET = "<Cloudflare service-token client secret>"
-```
-
-Both Access credentials must be configured together. They are sent as
-`CF-Access-Client-Id` and `CF-Access-Client-Secret` HTTP headers only to the
-configured non-local HTTPS Ollama endpoint. Local loopback Ollama connections
-do not receive these headers. Environment variables with the same names are also supported by the Streamlit
-app; when either credential environment variable is set, both must be set
-there. Credentials are not included in the app's connection errors or logs.
-This change only authenticates requests: it does not create or host an
-Ollama server, Cloudflare Tunnel, DNS name, or Access policy.
-
-### Indexed documents and persistence
-
-Cloud does not automatically receive your local Ollama process, downloaded
-models, ignored `chroma_db/` directory, or local indexed documents. A new Cloud
-instance starts with a new/empty Chroma collection. Uploaded original PDF bytes
-are processed in memory and not saved by the app; extracted chunks and vectors
-are written to the project-relative `chroma_db/` directory. Chroma's local
-`PersistentClient` is not a durable cloud storage service: indexed data may be
-lost when the app restarts, rebuilds, or moves to another instance. Do not rely
-on this deployment for persistent or sensitive document storage. Durable
-production use requires a persistent external vector store, backup/restore,
-and appropriate user isolation/access controls.
+Cloud deployment has not been tested from this development workspace. Verify
+the live app after configuring these services; do not treat a successful Git
+push or local test as evidence of a successful Cloud deployment.
 
 ### MCP limitation in Cloud
 

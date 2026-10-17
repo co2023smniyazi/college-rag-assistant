@@ -5,23 +5,22 @@ from pathlib import Path
 import streamlit as st
 
 from app_services import (
+    ChromaConfigurationError,
     OllamaAccessConfigurationError,
     build_rag_service,
     get_ollama_status,
+    index_uploaded_pdf,
     model_is_available,
+    resolve_chroma_settings,
     resolve_ollama_access_headers,
     resolve_ollama_host,
 )
-from chunker import chunk_pages
-from document_loader import (
-    DocumentProcessingError,
-    extract_pdf_pages,
-)
+from document_loader import DocumentProcessingError
 from embeddings import EMBEDDING_MODEL, EmbeddingServiceError, OllamaEmbedder
 from llm_service import CHAT_MODEL, LLMServiceError, UNKNOWN_ANSWER
 from rag_service import RAGService
 from retriever import DEFAULT_RESULT_COUNT
-from vector_store import ChromaVectorStore, VectorStoreError, document_id_for
+from vector_store import ChromaVectorStore, VectorStoreError
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -42,15 +41,31 @@ def get_configured_ollama_settings() -> tuple[str | None, dict[str, str] | None]
     return ollama_host, access_headers
 
 
+def get_configured_chroma_settings() -> tuple[str | None, int, bool, str | None]:
+    try:
+        secrets = st.secrets
+    except FileNotFoundError:
+        secrets = None
+    return resolve_chroma_settings(secrets)
+
+
 @st.cache_resource
 def get_services(
     ollama_host: str | None,
     access_headers: dict[str, str] | None,
+    chroma_host: str | None,
+    chroma_port: int,
+    chroma_ssl: bool,
+    chroma_auth_token: str | None,
 ) -> tuple[ChromaVectorStore, OllamaEmbedder, RAGService]:
     return build_rag_service(
         CHROMA_PATH,
         ollama_host=ollama_host,
         access_headers=access_headers,
+        chroma_host=chroma_host,
+        chroma_port=chroma_port,
+        chroma_ssl=chroma_ssl,
+        chroma_auth_token=chroma_auth_token,
     )
 
 
@@ -299,12 +314,22 @@ st.markdown(
 
 try:
     ollama_host, access_headers = get_configured_ollama_settings()
-except OllamaAccessConfigurationError as error:
+    chroma_host, chroma_port, chroma_ssl, chroma_auth_token = (
+        get_configured_chroma_settings()
+    )
+except (OllamaAccessConfigurationError, ChromaConfigurationError) as error:
     st.error(str(error))
     st.stop()
 
 try:
-    store, embedder, rag_service = get_services(ollama_host, access_headers)
+    store, embedder, rag_service = get_services(
+        ollama_host,
+        access_headers,
+        chroma_host,
+        chroma_port,
+        chroma_ssl,
+        chroma_auth_token,
+    )
 except VectorStoreError as error:
     st.error(str(error))
     st.stop()
@@ -315,6 +340,20 @@ ollama_connected, installed_models, ollama_message = get_cached_ollama_status(
 )
 chat_model_available = model_is_available(CHAT_MODEL, installed_models)
 embedding_model_available = model_is_available(EMBEDDING_MODEL, installed_models)
+chat_model_status = (
+    "Unavailable"
+    if not ollama_connected
+    else "Ready"
+    if chat_model_available
+    else "Model missing"
+)
+chat_model_note = (
+    ollama_message
+    if not ollama_connected
+    else CHAT_MODEL
+    if chat_model_available
+    else f"Install with: ollama pull {CHAT_MODEL}"
+)
 index_compatible = True
 if ollama_connected and embedding_model_available:
     try:
@@ -369,8 +408,8 @@ with status_columns[0]:
 with status_columns[1]:
     render_status_card(
         "Language model",
-        "Ready" if chat_model_available else "Model missing",
-        CHAT_MODEL if chat_model_available else f"Install with: ollama pull {CHAT_MODEL}",
+        chat_model_status,
+        chat_model_note,
         chat_model_available,
     )
 with status_columns[2]:
@@ -383,14 +422,15 @@ with status_columns[2]:
 
 with st.sidebar:
     st.header("📚 Your documents")
-    st.caption("Build your private college knowledge base.")
+    st.caption("Explore a shared library of public college documents.")
     indexing_enabled = (
         ollama_connected and embedding_model_available and index_compatible
     )
     if not ollama_connected:
         st.warning(
-            f"{ollama_message} If this app is deployed, configure OLLAMA_HOST "
-            "to an Ollama API endpoint reachable by the deployed app; localhost "
+            f"{ollama_message} If this app is deployed, configure "
+            "OLLAMA_REMOTE_HOST "
+            "to a network-reachable OLLAMA_REMOTE_HOST endpoint; localhost "
             "points to the app host, not your computer."
         )
     elif not embedding_model_available:
@@ -427,17 +467,17 @@ with st.sidebar:
     ):
         for uploaded_file in uploads or []:
             raw_bytes = uploaded_file.getvalue()
-            identifier = document_id_for(raw_bytes)
             try:
-                if store.has_document(identifier):
+                with st.spinner(f"Reading and indexing {uploaded_file.name}..."):
+                    result = index_uploaded_pdf(
+                        uploaded_file.name,
+                        raw_bytes,
+                        store,
+                        embedder,
+                    )
+                if result.already_indexed:
                     st.info(f"{uploaded_file.name} is already indexed.")
                     continue
-                with st.spinner(f"Reading and indexing {uploaded_file.name}..."):
-                    store.ensure_embedding_model(embedder.embed_texts)
-                    pages = extract_pdf_pages(raw_bytes, uploaded_file.name)
-                    chunks = chunk_pages(pages)
-                    vectors = embedder.embed_texts([chunk.text for chunk in chunks])
-                    store.add_chunks(identifier, chunks, vectors)
             except (
                 DocumentProcessingError,
                 EmbeddingServiceError,
@@ -447,8 +487,8 @@ with st.sidebar:
                 st.error(f"{uploaded_file.name}: {error}")
                 continue
             st.success(
-                f"Indexed {uploaded_file.name}: {len(pages)} page(s) with text, "
-                f"{len(chunks)} chunk(s)."
+                f"Indexed {uploaded_file.name}: {result.page_count} page(s) with text, "
+                f"{result.chunk_count} chunk(s)."
             )
 
     st.divider()
@@ -548,9 +588,7 @@ if "answer" in st.session_state:
             unsafe_allow_html=True,
         )
         if answer == UNKNOWN_ANSWER:
-            st.warning(
-                f"{answer} Check the indexed documents or try rephrasing your question."
-            )
+            st.warning(answer)
         else:
             st.markdown(answer)
     if sources:
@@ -571,7 +609,7 @@ if "answer" in st.session_state:
 st.markdown(
     '<div style="margin-top:2.5rem;color:#8a93a8;font-size:.78rem;text-align:center">'
     "Uploaded PDFs are processed in memory; extracted text and vectors are stored "
-    "in this app's ChromaDB · Answers are based on retrieved passages"
+    "in the configured ChromaDB · Answers are based on retrieved passages"
     "</div>",
     unsafe_allow_html=True,
 )
